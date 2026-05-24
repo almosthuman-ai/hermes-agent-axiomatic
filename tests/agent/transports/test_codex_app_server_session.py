@@ -153,6 +153,23 @@ class TestLifecycle:
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
 
+    def test_codex_home_passes_to_client_factory(self):
+        client = FakeClient()
+        seen = {}
+
+        def factory(**kwargs):
+            seen.update(kwargs)
+            return client
+
+        s = CodexAppServerSession(
+            cwd="/tmp",
+            codex_home="/tmp/codex-seat",
+            client_factory=factory,
+        )
+        s.ensure_started()
+
+        assert seen["codex_home"] == "/tmp/codex-seat"
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)

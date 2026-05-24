@@ -12,6 +12,7 @@ Verifies that:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -129,6 +130,84 @@ class TestRunConversationCodexPath:
             if m.get("role") == "user" and m.get("content") == "ping unique 12345"
         )
         assert user_count == 1, f"user message appeared {user_count}× in {result['messages']}"
+
+    def test_env_codex_seat_home_reaches_app_server_session(self, monkeypatch, tmp_path):
+        from agent.codex_runtime import run_codex_app_server_turn
+
+        seat_home = tmp_path / "codex-seat"
+        monkeypatch.setenv("HERMES_CODEX_SEAT_HOME", str(seat_home))
+        captured = {}
+
+        def fake_init(self, **kwargs):
+            captured.update(kwargs)
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(final_text="ok", error=None)
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = SimpleNamespace(
+            _codex_session=None,
+            session_cwd=str(tmp_path),
+            _iters_since_skill=0,
+            _skill_nudge_interval=0,
+            valid_tool_names=set(),
+            _sync_external_memory_for_turn=lambda **kwargs: None,
+        )
+
+        result = run_codex_app_server_turn(
+            agent,
+            user_message="hello",
+            original_user_message="hello",
+            messages=[],
+            effective_task_id="task-1",
+        )
+
+        assert result["final_response"] == "ok"
+        assert captured["codex_home"] == str(seat_home)
+        assert agent._codex_seat_metadata["codex_home"] == str(seat_home)
+
+    def test_seat_routed_app_server_does_not_resolve_hermes_codex_auth(
+        self, monkeypatch, tmp_path
+    ):
+        from agent.codex_runtime import run_codex_app_server_turn
+        import hermes_cli.auth as auth_mod
+
+        def fail_resolver(*args, **kwargs):
+            raise AssertionError("Hermes Codex credential resolver was called")
+
+        monkeypatch.setattr(
+            auth_mod,
+            "resolve_codex_runtime_credentials",
+            fail_resolver,
+        )
+        monkeypatch.setenv("HERMES_CODEX_SEAT_HOME", str(tmp_path / "seat"))
+        monkeypatch.setattr(CodexAppServerSession, "__init__", lambda self, **kwargs: None)
+        monkeypatch.setattr(
+            CodexAppServerSession,
+            "run_turn",
+            lambda self, user_input, **kwargs: TurnResult(final_text="ok", error=None),
+        )
+
+        agent = SimpleNamespace(
+            _codex_session=None,
+            session_cwd=str(tmp_path),
+            _iters_since_skill=0,
+            _skill_nudge_interval=0,
+            valid_tool_names=set(),
+            _sync_external_memory_for_turn=lambda **kwargs: None,
+        )
+
+        result = run_codex_app_server_turn(
+            agent,
+            user_message="hello",
+            original_user_message="hello",
+            messages=[],
+            effective_task_id="task-1",
+        )
+
+        assert result["completed"] is True
 
     def test_background_review_NOT_invoked_below_threshold(self, fake_session):
         """A single turn shouldn't trigger background review — counters

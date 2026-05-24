@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
+from tools.pty_backend import select_pty_backend
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,7 @@ class ProcessSession:
     _watch_consecutive_strikes: int = field(default=0, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
-    _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    _pty: Any = field(default=None, repr=False)  # PTY backend session (when use_pty=True)
 
 
 class ProcessRegistry:
@@ -500,23 +501,17 @@ class ProcessRegistry:
         )
 
         if use_pty:
-            # Try PTY mode for interactive CLI tools
+            # Try PTY mode for interactive CLI tools.
             try:
-                if _IS_WINDOWS:
-                    from winpty import PtyProcess as _PtyProcessCls
-                else:
-                    from ptyprocess import PtyProcess as _PtyProcessCls
-                user_shell = _find_shell()
-                pty_env = _sanitize_subprocess_env(os.environ, env_vars)
-                pty_env["PYTHONUNBUFFERED"] = "1"
-                pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
+                pty_proc = select_pty_backend().spawn(
+                    command=command,
                     cwd=session.cwd,
-                    env=pty_env,
-                    dimensions=(30, 120),
+                    env_vars=env_vars,
+                    rows=30,
+                    cols=120,
                 )
                 session.pid = pty_proc.pid
-                # Store the pty handle on the session for read/write
+                # Store the backend session for read/write/lifecycle actions.
                 session._pty = pty_proc
 
                 # PTY reader thread
@@ -536,8 +531,8 @@ class ProcessRegistry:
                 self._write_checkpoint()
                 return session
 
-            except ImportError:
-                logger.warning("ptyprocess not installed, falling back to pipe mode")
+            except ImportError as e:
+                logger.warning("PTY backend dependency missing (%s), falling back to pipe mode", e)
             except Exception as e:
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 

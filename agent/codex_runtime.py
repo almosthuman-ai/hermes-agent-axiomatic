@@ -41,13 +41,25 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
+    from agent.codex_seats import (
+        classify_codex_seat_outcome,
+        get_codex_seat_router,
+    )
     from agent.transports.codex_app_server_session import CodexAppServerSession
 
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
+    seat_router = get_codex_seat_router(agent)
+    seat_selection = getattr(agent, "_codex_seat_selection", None)
+
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
         cwd = getattr(agent, "session_cwd", None) or os.getcwd()
+        seat_selection = seat_router.select()
+        agent._codex_seat_selection = seat_selection
+        agent._codex_seat_metadata = (
+            seat_selection.to_metadata() if seat_selection is not None else None
+        )
         # Approval callback: defer to Hermes' standard prompt flow if a
         # CLI thread has installed one. Gateway / cron contexts get the
         # codex-side fail-closed default.
@@ -58,6 +70,7 @@ def run_codex_app_server_turn(
             approval_callback = None
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            codex_home=seat_selection.codex_home if seat_selection else None,
             approval_callback=approval_callback,
         )
 
@@ -75,6 +88,14 @@ def run_codex_app_server_turn(
             agent._codex_session.close()
         except Exception:
             pass
+        seat_router.record_outcome(
+            seat_selection,
+            classify_codex_seat_outcome(str(exc)),
+        )
+        agent._codex_seat_selection = None
+        agent._codex_seat_metadata = (
+            seat_selection.to_metadata() if seat_selection is not None else None
+        )
         agent._codex_session = None
         return {
             "final_response": (
@@ -102,6 +123,14 @@ def run_codex_app_server_turn(
             agent._codex_session.close()
         except Exception:
             pass
+        seat_router.record_outcome(
+            seat_selection,
+            classify_codex_seat_outcome(turn.error),
+        )
+        agent._codex_seat_selection = None
+        agent._codex_seat_metadata = (
+            seat_selection.to_metadata() if seat_selection is not None else None
+        )
         agent._codex_session = None
 
     # Splice projected messages into the conversation. The projector emits
